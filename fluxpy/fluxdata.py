@@ -117,6 +117,16 @@ class FluxData:
         df = self.compute_avg_soil_vars(df, soil_vars_map, 'g_')
         df = self.compute_avg_soil_vars(df, soil_vars_map, 'theta_')
 
+        # get column which corresponds to date so that we can set its values as the index of df
+        col_name = var_map['date']
+
+        try:
+            df[col_name] = pd.to_datetime(df[col_name])
+        except Exception as e:
+            print(f"Error converting to datetime: {e}")
+
+        df.set_index(col_name, inplace = True)
+
 
         return df, var_map, soil_vars_map
     
@@ -124,7 +134,6 @@ class FluxData:
     def compute_avg_soil_vars(self, df, soil_vars_weights, var_type: str):
         ''' helper function to calculate the averages of soil variables of type 'var_type' based on weights '''
         df = df.copy()
-        
         var_root = var_type[:-1]
 
         vars_map = {key: value for key, value in soil_vars_weights.items() if key.startswith(var_type)}
