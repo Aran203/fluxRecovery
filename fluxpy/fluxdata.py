@@ -3,7 +3,7 @@ from .utils import INTERNAL_VAR_NAMES
 
 class FluxData:
 
-    def __init__(self, df: pd.DataFrame, site_elevation: float, site_lat: float, site_long: float, variable_map, unit_map):
+    def __init__(self, df: pd.DataFrame, site_elevation: float, site_lat: float, site_long: float, variable_map):
         ''' 
             Constructor with the following parameters
                 df : dataframe object containing data
@@ -17,10 +17,13 @@ class FluxData:
         self.site_latitude = site_lat
         self.site_longitude = site_long
 
-        df_l, map_ = self.process_df_with_mapping(df, variable_map)
+        self.variable_map = {}
+
+        df_l, map_, soil_vars_ = self.process_df_with_mapping(df, variable_map)
 
         self._df = df_l 
-        self.variable_map = map_
+        self.variable_map.update(map_)
+        self.soil_vars_weights = soil_vars_
 
 
 
@@ -34,8 +37,9 @@ class FluxData:
                 if len(element) != 2:
                     raise ValueError(f"List length isn't 2 for {element}")
                 
-                # if (element[0] not in internal_var_names):
-                #     raise ValueError(f'{element[0]} is not recogized as an internal name')
+                if (element[0] not in internal_var_names):
+                    if not ((element[0].startswith('g_') or element[0].startswith('theta_'))):
+                        raise ValueError(f'{element[0]} is not recogized as an internal name')
                 
             for element in variable_map:
                 vars_map[element[0]] = element[1]
@@ -49,35 +53,38 @@ class FluxData:
                     if len(variable_map[key]) == 0:
                         keys_to_delete.append(key)
 
-            
             for key in keys_to_delete:
                 del variable_map[key]
 
-
             for key in variable_map.keys():
-                # if key not in internal_var_names:
-                #     raise ValueError(f'{key} is not recogized as an internal name')
-                
-                # isTuple = isinstance(variable_map[key], tuple)
-                
-                # if (not isTuple):
-                #     raise ValueError(f'Value for {key} is not a tuple')
-
-                # if (len(variable_map[key]) != 2):
-                #     raise ValueError(f'Tuple doesn\'t have length 2 for key {key}')
+                if key not in internal_var_names:
+                    if not ((key.startswith('g_') or key.startswith('theta_'))):
+                        raise ValueError(f'{key} is not recogized as an internal name')
 
                 vars_map[key] = variable_map[key]
     
         return vars_map
 
+    def process_soil_variables(self, variable_map):
+        soil_vars = {key: value for key, value in variable_map.items() 
+                     if (key.startswith('g_') or (key.startswith('theta_')))}
+
+        soil_vars_map = {}
+
+        for var in soil_vars.keys():
+            soil_vars_map[var] = (soil_vars[var], 1)   # weight of 1 by default
+
+        return soil_vars_map
+        
 
     def process_df_with_mapping(self, df, variable_map):
         df = df.copy()
         var_map = self.process_variable_map(variable_map)
+        soil_vars_map = self.process_soil_variables(var_map)
 
         input_cols_all = set(df.columns)
 
-        # first only read columns which are there
+        # first only read columns which are present
         cols_present = []
 
         for key in var_map.keys():
@@ -106,9 +113,64 @@ class FluxData:
         
         df = df.rename(columns = mod_dict)
 
-        return df, var_map
+        # compute averages of soil variables if present
+        df = self.compute_avg_soil_vars(df, soil_vars_map)
+
+
+        return df, var_map, soil_vars_map
     
     
+    def compute_avg_soil_vars(self, df, soil_vars_weights):
+        ''' helper function to calculate the averages of soil variables (theta and g) based on weights '''
+        g_mean = None
+        theta_mean = None
+
+        df = df.copy()
+
+        g_vars = {key: value for key, value in soil_vars_weights.items() if key.startswith('g_')}
+        g_mean = pd.Series([0] * len(df))
+        g_weight_total = 0
+
+        for key in g_vars.keys():
+            column = g_vars[key][0]
+            weight = g_vars[key][1]
+
+            g_weight_total += weight 
+            g_mean = g_mean + (df[column] * weight)
+
+        if (g_weight_total != 0):
+            print("Calculating mean for variable G")
+            df['g_mean'] = g_mean / g_weight_total
+            self.add_to_variable_map('g_mean', 'g_mean')
+
+        theta_vars = {key : value for key, value in soil_vars_weights.items() if key.startswith('theta_')}
+        theta_mean = pd.Series([0] * len(df))
+        theta_weight_total = 0
+
+        for key in theta_vars.keys():
+            column = theta_vars[key][0]
+            weight = theta_vars[key][1]
+
+            theta_weight_total += weight
+            theta_mean += (df[column] * weight)
+        
+        if (theta_weight_total != 0):
+            print("Calculating mean for variable THETA")
+            df['theta_mean'] = theta_mean / theta_weight_total
+            self.add_to_variable_map('theta_mean', 'theta_mean')
+
+
+        return df
+    
+
+    def add_to_variable_map(self, internal_name, user_name):
+        ''' helper function to add to variable map afterwards; used when averages are computed
+            overwrites values for previously defined internal names'''
+
+        self.variable_map[internal_name] = user_name
+
+        
+
     # Getters
     def get_latitude(self):
         return self.latitude
