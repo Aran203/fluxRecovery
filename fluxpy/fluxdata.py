@@ -3,7 +3,7 @@ from .utils import INTERNAL_VAR_NAMES
 
 class FluxData:
 
-    def __init__(self, df: pd.DataFrame, site_elevation: float, site_lat: float, site_long: float, variable_map):
+    def __init__(self, df: pd.DataFrame, site_elevation: float, site_lat: float, site_long: float, variable_map, unit_map):
         ''' 
             Constructor with the following parameters
                 df : dataframe object containing data
@@ -31,14 +31,14 @@ class FluxData:
         if (isinstance(variable_map, list)):
 
             for element in variable_map:
-                if len(element) != 3:
-                    raise ValueError(f"List length isn't 3 for {element}")
+                if len(element) != 2:
+                    raise ValueError(f"List length isn't 2 for {element}")
                 
                 # if (element[0] not in internal_var_names):
                 #     raise ValueError(f'{element[0]} is not recogized as an internal name')
                 
             for element in variable_map:
-                vars_map[element[0]] = (element[1], element[2])
+                vars_map[element[0]] = element[1]
 
         elif (isinstance(variable_map, dict)):
             keys_to_delete = []
@@ -58,13 +58,13 @@ class FluxData:
                 # if key not in internal_var_names:
                 #     raise ValueError(f'{key} is not recogized as an internal name')
                 
-                isTuple = isinstance(variable_map[key], tuple)
+                # isTuple = isinstance(variable_map[key], tuple)
                 
-                if (not isTuple):
-                    raise ValueError(f'Value for {key} is not a tuple')
+                # if (not isTuple):
+                #     raise ValueError(f'Value for {key} is not a tuple')
 
-                if (len(variable_map[key]) != 2):
-                    raise ValueError(f'Tuple doesn\'t have length 2 for key {key}')
+                # if (len(variable_map[key]) != 2):
+                #     raise ValueError(f'Tuple doesn\'t have length 2 for key {key}')
 
                 vars_map[key] = variable_map[key]
     
@@ -81,7 +81,7 @@ class FluxData:
         cols_present = []
 
         for key in var_map.keys():
-            input_col_name = var_map[key][0]
+            input_col_name = var_map[key]
             if input_col_name in input_cols_all:
                 cols_present.append(input_col_name)
             else:
@@ -94,11 +94,11 @@ class FluxData:
         mod_dict = {}
 
         for key in var_map.keys():
-            input_col_name = var_map[key][0]
+            input_col_name = var_map[key]
 
             if (input_col_name in internal_var_names):
                 mod_dict[input_col_name] = "INPUT_" + input_col_name
-                var_map[key] = ("INPUT_" + input_col_name, var_map[key][1])
+                var_map[key] = "INPUT_" + input_col_name
 
 
         for key in mod_dict:
@@ -109,8 +109,6 @@ class FluxData:
         return df, var_map
     
     
-    
-
     # Getters
     def get_latitude(self):
         return self.latitude
@@ -120,9 +118,3 @@ class FluxData:
     
     def get_elevation(self):
         return self.elevation
-
-
-                
-            
-    
-
