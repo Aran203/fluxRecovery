@@ -114,50 +114,34 @@ class FluxData:
         df = df.rename(columns = mod_dict)
 
         # compute averages of soil variables if present
-        df = self.compute_avg_soil_vars(df, soil_vars_map)
+        df = self.compute_avg_soil_vars(df, soil_vars_map, 'g_')
+        df = self.compute_avg_soil_vars(df, soil_vars_map, 'theta_')
 
 
         return df, var_map, soil_vars_map
     
     
-    def compute_avg_soil_vars(self, df, soil_vars_weights):
-        ''' helper function to calculate the averages of soil variables (theta and g) based on weights '''
-        g_mean = None
-        theta_mean = None
-
+    def compute_avg_soil_vars(self, df, soil_vars_weights, var_type: str):
+        ''' helper function to calculate the averages of soil variables of type 'var_type' based on weights '''
         df = df.copy()
-
-        g_vars = {key: value for key, value in soil_vars_weights.items() if key.startswith('g_')}
-        g_mean = pd.Series([0] * len(df))
-        g_weight_total = 0
-
-        for key in g_vars.keys():
-            column = g_vars[key][0]
-            weight = g_vars[key][1]
-
-            g_weight_total += weight 
-            g_mean = g_mean + (df[column] * weight)
-
-        if (g_weight_total != 0):
-            print("Calculating mean for variable G")
-            df['g_mean'] = g_mean / g_weight_total
-            self.add_to_variable_map('g_mean', 'g_mean')
-
-        theta_vars = {key : value for key, value in soil_vars_weights.items() if key.startswith('theta_')}
-        theta_mean = pd.Series([0] * len(df))
-        theta_weight_total = 0
-
-        for key in theta_vars.keys():
-            column = theta_vars[key][0]
-            weight = theta_vars[key][1]
-
-            theta_weight_total += weight
-            theta_mean += (df[column] * weight)
         
-        if (theta_weight_total != 0):
-            print("Calculating mean for variable THETA")
-            df['theta_mean'] = theta_mean / theta_weight_total
-            self.add_to_variable_map('theta_mean', 'theta_mean')
+        var_root = var_type[:-1]
+
+        vars_map = {key: value for key, value in soil_vars_weights.items() if key.startswith(var_type)}
+        var_mean = pd.Series([0] * len(df))
+        var_weight_total = 0
+
+        for key in vars_map.keys():
+            column = vars_map[key][0]
+            weight = vars_map[key][1]
+
+            var_weight_total += weight 
+            var_mean = var_mean + (df[column] * weight)
+
+        if (var_weight_total != 0):
+            print(f"Calculating mean for variable {var_root.upper()}")
+            df[f'{var_root + "_mean"}'] = var_mean / var_weight_total
+            self.add_to_variable_map(f'{var_root + "_mean"}', f'{var_root + "_mean"}')
 
 
         return df
