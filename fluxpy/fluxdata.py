@@ -166,10 +166,10 @@ class FluxData:
 
     # Getters
     def get_latitude(self):
-        return self.latitude
+        return self.site_latitude
     
     def get_longitude(self):
-        return self.longitude 
+        return self.site_longitude 
     
     def get_elevation(self):
-        return self.elevation
+        return self.site_elevation
