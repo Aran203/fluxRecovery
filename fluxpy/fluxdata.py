@@ -3,7 +3,7 @@ from .utils import INTERNAL_VAR_NAMES
 
 class FluxData:
 
-    def __init__(self, df: pd.DataFrame, site_elevation: float, site_lat: float, site_long: float, variable_map):
+    def __init__(self, df: pd.DataFrame, site_elevation: float, site_lat: float, site_long: float, freq: float, variable_map):
         ''' 
             Constructor with the following parameters
                 df : dataframe object containing data
@@ -16,6 +16,7 @@ class FluxData:
         self.site_elevation = site_elevation
         self.site_latitude = site_lat
         self.site_longitude = site_long
+        self.freq = self.process_freq(freq)
 
         self.variable_map = {}
 
@@ -26,6 +27,11 @@ class FluxData:
         self.soil_vars_weights = soil_vars_
 
 
+    def process_freq(self, freq):
+        # TODO
+        # check the frequency of data and return it if it is one of the permitted ones
+
+        return freq
 
     def process_variable_map(self, variable_map):
         vars_map = {}
@@ -109,7 +115,8 @@ class FluxData:
 
 
         for key in mod_dict:
-            print(f"Renaming {key} to {mod_dict[key]}")
+            # print(f"Renaming {key} to {mod_dict[key]}")
+            pass
         
         df = df.rename(columns = mod_dict)
 
@@ -173,3 +180,6 @@ class FluxData:
     
     def get_elevation(self):
         return self.site_elevation
+    
+    def get_freq(self):
+        return self.freq
