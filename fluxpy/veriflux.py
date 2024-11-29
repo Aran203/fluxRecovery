@@ -1,8 +1,11 @@
 
 from .fluxdata import FluxData
 from .utils import GRIDMET_KEYS, AGG_DICT
+
 import pandas as pd
 import numpy as np
+from refet.calcs import _ra_daily, _rso_simple
+
 
 class VeriFlux(FluxData):
 
@@ -16,17 +19,17 @@ class VeriFlux(FluxData):
         self.freq = flux_data.get_freq()
 
         self._df = flux_data._df
-        self.monthly_df = None
+        self.daily_df = None
         self.variable_map = flux_data.variable_map
         self.inv_variable_map = {value : key for key, value in self.variable_map.items() if (value in self._df.columns)}
 
         self.flux_data = flux_data
         self.gridMET_data = gridMET_data
 
-        self.monthly_df = self.temporal_aggregation(drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night)
+        self.daily_df = self.temporal_aggregation(drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night)
+        # print(self._df.columns)
+        # print(self.monthly_df[['INPUT_H', 'INPUT_LE', 'H_subday_gaps', 'LE_subday_gaps', 'G_subday_gaps', 'Rn_subday_gaps']])
         
-        print(self.monthly_df[['INPUT_H', 'INPUT_LE', 'H_subday_gaps', 'LE_subday_gaps', 'G_subday_gaps', 'Rn_subday_gaps']])
-         
 
     def temporal_aggregation(self, drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night):
 
@@ -52,7 +55,6 @@ class VeriFlux(FluxData):
         
         
         if self.freq == 'D':
-            print("DF")
             return self._df.rename(columns = self.variable_map)
         
         energy_vars = {'LE', 'H', 'Rn', 'G'}
@@ -116,7 +118,7 @@ class VeriFlux(FluxData):
 
             means[interp_vars] = interped[interp_vars].resample('D').mean().copy()
 
-            print(means)
+            # print(means)
 
             if 't_avg' in interp_vars:
                 means['t_min'] = interped.t_avg.resample('D').min()
@@ -131,7 +133,7 @@ class VeriFlux(FluxData):
             if drop_gaps:
 
                 n_vals_needed = int(24 / freq_hrs)
-                print(n_vals_needed)
+                # print(n_vals_needed)
 
                 data_cols = [ c for c in df.columns if not c.endswith('_qc_flag')]
 
@@ -144,13 +146,12 @@ class VeriFlux(FluxData):
 
             if drop_gaps:
                 print(f'Filtering days with less then {daily_frac * 100}% sub-daily measurements')
-                print(days_with_gaps)
+                # print(days_with_gaps)
                 df[days_with_gaps] = np.nan
 
     
         df = df.rename(columns = self.variable_map)
         return df
-
             
     def frequency_to_hours(self, freq):
         unit_to_hours = {
