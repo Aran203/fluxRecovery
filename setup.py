@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name = "fluxpy",                 
+    name = "fluxease",                 
     version = "0.1",                 
     packages = find_packages(),      
     install_requires = ["pandas"],
@@ -9,7 +9,7 @@ setup(
     description = "A package for eddy flux data post processing",  
     long_description = open("README.md").read(),  
     long_description_content_type = "text/markdown", 
-    url = "https://github.com/Aran203/fluxpy",  
+    url = "https://github.com/Aran203/fluxease",  
     classifiers = [                  
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

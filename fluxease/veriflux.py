@@ -28,7 +28,7 @@ class VeriFlux(FluxData):
 
         self.daily_df = self.temporal_aggregation(drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night)
         # print(self._df.columns)
-        # print(self.monthly_df[['INPUT_H', 'INPUT_LE', 'H_subday_gaps', 'LE_subday_gaps', 'G_subday_gaps', 'Rn_subday_gaps']])
+        # print(self.daily_df[['INPUT_H', 'INPUT_LE', 'H_subday_gaps', 'LE_subday_gaps', 'G_subday_gaps', 'Rn_subday_gaps']])
         
 
     def temporal_aggregation(self, drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night):
@@ -172,6 +172,20 @@ class VeriFlux(FluxData):
             raise ValueError(f"Unsupported frequency unit: {unit}")
         
         return int(num) * unit_to_hours[unit]
+
+    def _calc_rso(self):
+        
+        if 'rso' in self.daily_df.columns:
+            return
+
+        doy = self.daily_df.index.dayofyear
+        latitude_rads = self.site_latitude * (np.pi / 180)
+
+        ra_mj_m2 = _ra_daily(latitude_rads, doy, method='asce')
+        rso_a_mj_m2 = _rso_simple(ra_mj_m2, self.site_elevation)
+
+        self.daily_df['rso'] = rso_a_mj_m2 * 11.574
+        self.variable_map.update({'rso' : 'rso'})
 
     def set_gridMET_data(self, data):
         '''Sets gridMET data to be the data given
