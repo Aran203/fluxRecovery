@@ -4,6 +4,7 @@ from .utils import GRIDMET_KEYS, AGG_DICT
 
 import pandas as pd
 import numpy as np
+import xarray
 from refet.calcs import _ra_daily, _rso_simple
 
 
@@ -29,7 +30,12 @@ class VeriFlux(FluxData):
         self.daily_df = self.temporal_aggregation(drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night)
         # print(self._df.columns)
         # print(self.daily_df[['INPUT_H', 'INPUT_LE', 'H_subday_gaps', 'LE_subday_gaps', 'G_subday_gaps', 'Rn_subday_gaps']])
-        
+    
+    def add_to_variable_map(self, internal_name, user_name):
+        ''' helper function to add to variable map afterwards'''
+
+        self.variable_map[internal_name] = user_name
+        self.inv_variable_map[user_name] = internal_name
 
     def temporal_aggregation(self, drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night):
 
@@ -197,9 +203,45 @@ class VeriFlux(FluxData):
         else:
             self.gridMET_data = pd.read_csv(data)
 
-    def get_gridMET_data(self, data):
+    def get_gridMET_data(self):
         '''downloads gridMET data'''
-        # TODO
 
-        pass
+        # opendap thredds server
+        root = 'http://thredds.northwestknowledge.net:8080/thredds/dodsC/'
+
+        variables = ['ETr', 'pet', 'pr']
+
+            
+        dates = self._df.index
+        gridmet_data_all = []
+
+        for i, v in enumerate(variables):
+            if v not in GRIDMET_KEYS:
+                print(f'ERROR: {v} is not a valid gridMET variable')
+
+            meta = GRIDMET_KEYS[v]
+
+            self.add_to_variable_map(meta['rename'], meta['rename'])
+            print(f'Downloading gridMET var: {meta['name']}\n') 
+
+            netcdf = f'{root}{meta['nc_suffix']}'
+
+            ds = xarray.open_dataset(netcdf).sel(lon = self.site_longitude, lat = self.site_latitude, method = 'nearest').drop('crs')
+            df = ds.to_dataframe().loc[dates].rename(columns={meta['name']:meta['rename']})
+
+            df.index.name = 'date' # ensure date col name is 'date'
+            # on first variable (if multiple) grab gridcell centroid coords
+            if i == 0:
+                lat_centroid = df.lat[0]
+                lon_centroid = df.lon[0]
+
+            df.drop(['lat', 'lon'], axis = 1, inplace = True)
+
+            gridmet_data_all.append(df)
+        
+        # combine data
+        df = pd.concat(gridmet_data_all, axis = 1)
+
+        return df
+        
 
