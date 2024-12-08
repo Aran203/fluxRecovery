@@ -212,7 +212,7 @@ class VeriFlux(FluxData):
         variables = ['ETr', 'pet', 'pr']
 
             
-        dates = self._df.index
+        dates = self.daily_df.index
         gridmet_data_all = []
 
         for i, v in enumerate(variables):
@@ -222,9 +222,9 @@ class VeriFlux(FluxData):
             meta = GRIDMET_KEYS[v]
 
             self.add_to_variable_map(meta['rename'], meta['rename'])
-            print(f'Downloading gridMET var: {meta['name']}\n') 
+            print(f'Downloading gridMET var: {meta["name"]}\n') 
 
-            netcdf = f'{root}{meta['nc_suffix']}'
+            netcdf = f'{root}{meta["nc_suffix"]}'
 
             ds = xarray.open_dataset(netcdf).sel(lon = self.site_longitude, lat = self.site_latitude, method = 'nearest').drop('crs')
             df = ds.to_dataframe().loc[dates].rename(columns={meta['name']:meta['rename']})
