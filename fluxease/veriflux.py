@@ -203,7 +203,7 @@ class VeriFlux(FluxData):
         else:
             self.gridMET_data = pd.read_csv(data)
 
-    def get_gridMET_data(self):
+    def fetch_gridMET_data(self):
         '''downloads gridMET data'''
 
         # opendap thredds server
@@ -214,6 +214,7 @@ class VeriFlux(FluxData):
             
         dates = self.daily_df.index
         gridmet_data_all = []
+        print()
 
         for i, v in enumerate(variables):
             if v not in GRIDMET_KEYS:
@@ -222,18 +223,14 @@ class VeriFlux(FluxData):
             meta = GRIDMET_KEYS[v]
 
             self.add_to_variable_map(meta['rename'], meta['rename'])
-            print(f'Downloading gridMET var: {meta["name"]}\n') 
+            print(f'Downloading gridMET var: {meta["name"]}') 
 
             netcdf = f'{root}{meta["nc_suffix"]}'
 
             ds = xarray.open_dataset(netcdf).sel(lon = self.site_longitude, lat = self.site_latitude, method = 'nearest').drop('crs')
             df = ds.to_dataframe().loc[dates].rename(columns={meta['name']:meta['rename']})
 
-            df.index.name = 'date' # ensure date col name is 'date'
-            # on first variable (if multiple) grab gridcell centroid coords
-            if i == 0:
-                lat_centroid = df.lat[0]
-                lon_centroid = df.lon[0]
+            df.index.name = 'date' 
 
             df.drop(['lat', 'lon'], axis = 1, inplace = True)
 
@@ -244,4 +241,15 @@ class VeriFlux(FluxData):
 
         return df
         
+    def save_gridMET_data(self, filename = None):
+        '''Functionality to save fetched gridmet data in csv with specified filename if given '''
 
+        if isinstance(self.gridMET_data, pd.DataFrame) and not self.gridMET_data.empty:
+            print("Saving gridMET data")
+
+            if not filename:
+                self.gridMET_data.to_csv(f"gridMET_{self.site_latitude}_{self.site_longitude}.csv", index = False)
+            else:
+                self.gridMET_data.to_csv(filename, index = False)
+        else:
+            print("No gridMET data to save")
