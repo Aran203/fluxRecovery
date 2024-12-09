@@ -1,2 +1,2 @@
-# fluxpy
+# fluxease
 Python package for eddy flux data post processing
