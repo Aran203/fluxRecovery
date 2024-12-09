@@ -6,6 +6,8 @@ Eddy covariance tower data is fundamental for ecosystem research. These datasets
 ## Vision & Current Work
 This package is in development stages currently. It builds on top of the `flux-data-qaqc` package (used to post process energy variables) by removing the input text configuration file dependency. We aim to add support for post processing carbon and water variables shortly
 
+![energy_cycle](energy_cycle.png)
+
 ## How to Use?
 1. Clone repo 
 2. In the working directory you cloned the repository in, you can run the post processing workflows in a manner (similar to how you would `flux-data-qaqc`) as shown below:
