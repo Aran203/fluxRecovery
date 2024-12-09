@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 import xarray
 from refet.calcs import _ra_daily, _rso_simple
+from sklearn import linear_model
+from sklearn.metrics import mean_squared_error
 
 
 class VeriFlux(FluxData):
@@ -28,9 +30,10 @@ class VeriFlux(FluxData):
         self.gridMET_data = gridMET_data
 
         self.daily_df = self.temporal_aggregation(drop_gaps, daily_frac, max_interp_hours_day, max_interp_hours_night)
-        # print(self._df.columns)
+        self.corrected_daily_df = None
+        
         # print(self.daily_df[['INPUT_H', 'INPUT_LE', 'H_subday_gaps', 'LE_subday_gaps', 'G_subday_gaps', 'Rn_subday_gaps']])
-    
+
     def add_to_variable_map(self, internal_name, user_name):
         ''' helper function to add to variable map afterwards'''
 
@@ -79,15 +82,10 @@ class VeriFlux(FluxData):
         sum_cols = [k for k, v in AGG_DICT.items() if v == 'sum']
         sum_cols = list(set(sum_cols).intersection(df.columns))
         mean_cols = list(set(df.columns) - set(sum_cols))
-
-        # print(sum_cols)
-        # print(mean_cols)
-        
-        
+                
 
         means = df[mean_cols].apply(pd.to_numeric, errors='coerce').resample('D').mean().copy()
         sums = df[sum_cols].dropna().apply(pd.to_numeric, errors='coerce').resample('D').sum()
-
 
         if max_interp_hours_day:
             freq_hrs = self.frequency_to_hours(self.freq)
@@ -124,7 +122,6 @@ class VeriFlux(FluxData):
 
             means[interp_vars] = interped[interp_vars].resample('D').mean().copy()
 
-            # print(means)
 
             if 't_avg' in interp_vars:
                 means['t_min'] = interped.t_avg.resample('D').min()
@@ -139,7 +136,6 @@ class VeriFlux(FluxData):
             if drop_gaps:
 
                 n_vals_needed = int(24 / freq_hrs)
-                # print(n_vals_needed)
 
                 data_cols = [ c for c in df.columns if not c.endswith('_qc_flag')]
 
@@ -152,7 +148,6 @@ class VeriFlux(FluxData):
 
             if drop_gaps:
                 print(f'Filtering days with less then {daily_frac * 100}% sub-daily measurements')
-                # print(days_with_gaps)
                 df[days_with_gaps] = np.nan
 
     
@@ -179,6 +174,91 @@ class VeriFlux(FluxData):
         
         return int(num) * unit_to_hours[unit]
 
+    def _ET_gap_fill(self, et_name='ET_corr', refET='ETr'):
+        
+        df = self.corrected_daily_df.copy()
+        
+
+        _et_gap_fill_vars = ('ET_gap', 'ET_fill', 'ET_fill_val', 'ETrF', 'ETrF_filtered', 'EToF', 'EToF_filtered')
+
+        vars = [i for i in _et_gap_fill_vars if i in set(df.columns)]
+        if vars:
+            df.drop(columns = vars, inplace = True)
+        df = df.rename(columns = self.inv_variable_map)
+        
+
+        if not self.gridMET_data:
+            self.gridMET_data = self.fetch_gridMET_data()
+        
+            
+        vars_to_remove = [i for i in self.gridMET_data.columns if i in set(df.columns)]
+        if vars_to_remove:
+            self.gridMET_data.drop(columns = vars_to_remove, inplace = True)
+
+        df = df.join(self.gridMET_data)
+        for col in self.gridMET_data.columns:
+            self.variable_map[col] = col
+
+        if et_name not in df.columns:
+            print(f'ERROR: {et_name} not found in data, cannot gap-fill')
+            return
+
+        print(f'Gap filling {et_name} with filtered {refET}F x {refET} (gridMET)')
+
+        if refET == 'ETr':
+            df['ETrF'] = df[et_name].astype(float) / df.gridMET_ETr.astype(float)
+            df['ETrF_filtered'] = df['ETrF']
+            # filter out extremes of ETrF
+            Q1 = df['ETrF_filtered'].quantile(0.25)
+            Q3 = df['ETrF_filtered'].quantile(0.75)
+            IQR = Q3 - Q1
+            to_filter = df.query('ETrF_filtered<(@Q1-1.5*@IQR) or ETrF_filtered>(@Q3+1.5*@IQR)')
+
+            df.loc[to_filter.index, 'ETrF_filtered'] = np.nan
+            df['ETrF_filtered'] = df.ETrF_filtered.rolling(7, min_periods=2, center=True).mean()
+
+            df.ETrF_filtered = df.ETrF_filtered.interpolate(method='linear')
+            df['ET_fill'] = df.gridMET_ETr * df.ETrF_filtered
+            df['ET_gap'] = False
+            df.loc[(df[et_name].isna() & df.ET_fill.notna()), 'ET_gap'] = True
+            df.loc[df.ET_gap, et_name] = df.loc[df.ET_gap, 'ET_fill']
+
+        elif refET == 'ETo':
+            df['EToF'] = df[et_name].astype(float) / df.gridMET_ETo.astype(float)
+            df['EToF_filtered'] = df['EToF']
+
+            Q1 = df['EToF_filtered'].quantile(0.25)
+            Q3 = df['EToF_filtered'].quantile(0.75)
+            IQR = Q3 - Q1
+            to_filter = df.query('EToF_filtered<(@Q1-1.5*@IQR) or EToF_filtered>(@Q3+1.5*@IQR)')
+            df.loc[to_filter.index, 'EToF_filtered'] = np.nan
+            df['EToF_filtered'] = df.EToF_filtered.rolling(7, min_periods=2, center=True).mean()
+            df.EToF_filtered = df.EToF_filtered.interpolate(method='linear')
+
+            # calc ET from EToF_filtered and ETo
+            df['ET_fill'] = df.gridMET_ETo * df.EToF_filtered
+            df['ET_gap'] = False
+
+            df.loc[(df[et_name].isna() & df.ET_fill.notna()), 'ET_gap'] = True
+            df.loc[df.ET_gap, et_name] = df.loc[df.ET_gap, 'ET_fill']
+            
+
+        if et_name == 'ET_corr' and 't_avg' in df.columns:
+            df['LE_corr'] = (df.ET_corr * (2501000 - 2361 * df.t_avg.fillna(20))) / 86400
+        
+        elif et_name == 'ET_corr' and not 't_avg' in df.columns:
+            df['LE_corr'] = (df.ET_corr * (2501000 - 2361 * 20)) / 86400
+
+        df['ET_fill_val'] = np.nan
+        df.loc[df.ET_gap , 'ET_fill_val'] = df.ET_fill
+
+        new_cols = set(df.columns) - set(self.variable_map)
+        for col in new_cols:
+            self.variable_map[col] = col
+        
+
+        self.daily_df = df
+
     def _calc_rso(self):
         
         if 'rso' in self.daily_df.columns:
@@ -193,6 +273,379 @@ class VeriFlux(FluxData):
         self.daily_df['rso'] = rso_a_mj_m2 * 11.574
         self.variable_map.update({'rso' : 'rso'})
 
+    def _calc_et(self):
+        
+        df = self.corrected_daily_df.copy()
+        df = df.rename(columns = self.inv_variable_map)
+
+        vars = ['ET', 'ET_corr', 'ET_user_corr']
+        vars_to_drop = []
+
+        for var in vars:
+            if var in df.columns:
+                vars_to_drop.append(var)
+        
+        if vars_to_drop:
+            df.drop(columns = vars_to_drop, inplace = True)
+
+        if not set(['LE','LE_corr','LE_user_corr']).intersection(df.columns):
+            print('ERROR: no LE variables found in data')
+            return
+        
+        if 't_avg' in df.columns:
+            df['ET'] = 86400 * (df.LE / (2501000 - (2361 * df.t_avg.fillna(20))))
+            if 'LE_corr' in df.columns:
+                df['ET_corr'] = 86400 * (df.LE_corr / (2501000 - (2361 * df.t_avg.fillna(20))))
+            if 'LE_user_corr' in df.columns:
+                df['ET_user_corr'] = 86400*(df.LE_user_corr / (2501000 - (2361 * df.t_avg.fillna(20))))
+        else:
+            df['ET'] = 86400 * (df.LE / (2501000 - (2361 * 20)))
+            if 'LE_corr' in df.columns:
+                df['ET_corr'] = 86400 * (df.LE_corr/(2501000 - (2361 * 20)))
+            if 'LE_user_corr' in df.columns:
+                df['ET_user_corr']=86400*(df.LE_user_corr/(2501000-(2361*20)))
+        
+        new_cols = set(df.columns) - set(self.variable_map)
+        for col in new_cols:
+            self.variable_map[col] = col
+        
+        self.inv_variable_map = {value : key for key, value in self.variable_map.items() if (value in self._df.columns)}
+        self.corrected_daily_df = df.rename(columns = self.variable_map)
+
+
+    def _ebr_correction(self):
+        wind_1 = 15
+        wind_2 = 11
+        half_win_1 = wind_1 // 2
+        half_win_2 = wind_2 // 2
+
+        df = self.daily_df.copy()
+
+        _eb_calc_vars = ('br', 'br_user_corr', 'energy', 'energy_corr', 'ebr', 'ebr_corr', 'ebr_user_corr',
+        'ebc_cf', 'ebr_5day_clim', 'flux', 'flux_corr', 'flux_user_corr','G_corr','H_corr', 'LE_corr', 'Rn_corr')
+
+        vars = [i for i in _eb_calc_vars if i in set(self.daily_df.columns)]
+        if vars:
+            df.drop(columns = vars)
+
+        df = df.rename(columns = self.inv_variable_map)
+
+        vars_to_use = ['LE','H','Rn','G']
+
+        potential_vars = {'SH', 'SLE', 'SG'}
+        vars_to_use += [i for i in potential_vars if i in df.columns]
+
+
+        df = df[vars_to_use].astype(float).copy()
+
+        
+        orig_df = df[['LE','H','Rn','G']].astype(float).copy()
+        orig_df['ebr'] =  (orig_df.H + orig_df.LE) / (orig_df.Rn - orig_df.G)
+
+        df['ebr'] = (df.H + df.LE) / (df.Rn - df.G)
+        Q1 = df['ebr'].quantile(0.25)
+        Q3 = df['ebr'].quantile(0.75)
+        IQR = Q3 - Q1
+
+        # filter values between Q1-1.5IQR and Q3+1.5IQR
+        filtered = df.query('(@Q1 - 1.5 * @IQR) <= ebr <= (@Q3 + 1.5 * @IQR)')
+
+        filtered_mask = filtered.index
+        removed_mask = set(df.index) - set(filtered_mask)
+        removed_mask = pd.to_datetime(list(removed_mask))
+        df.loc[removed_mask] = np.nan
+
+        ebr = df.ebr.values
+        df['ebr_corr'] = np.nan
+
+        for i in range(len(ebr)):
+            win_arr1 = ebr[i-half_win_1:i+half_win_1+1]
+            win_arr2 = ebr[i-half_win_2:i+half_win_2+1]
+            count = np.count_nonzero(~np.isnan(win_arr1))
+            # get median of daily window1 if half window2 or more days exist
+            if count >= half_win_2:
+                val = np.nanpercentile(win_arr1, 50, axis=None)
+                if abs(1/val) >= 2 or abs(1/val) <= 0.5:
+                    val = np.nan
+            # if at least one day exists in window2 take mean
+            elif np.count_nonzero(~np.isnan(win_arr2)) > 0:
+                val = np.nanmedian(win_arr2)
+                if abs(1/val) >= 2 or abs(1/val) <= 0.5:
+                    val = np.nan
+            else:
+                # assign nan for now, update with 5 day climatology
+                val = np.nan
+            # assign values if they were found in methods 1 or 2
+            df.iloc[i, df.columns.get_loc('ebr_corr')] = val
+
+
+        
+        doy_ebr_mean=df['ebr_corr'].groupby(df.index.dayofyear).mean().copy()
+        l5days = pd.Series( index=np.arange(-4,1), data=doy_ebr_mean.iloc[-5:].values)
+        f5days = pd.Series(index=np.arange(367,372), data=doy_ebr_mean.iloc[:5].values)
+        
+        #doy_ebr_mean = doy_ebr_mean.append(f5days)
+        doy_ebr_mean = pd.concat([doy_ebr_mean, f5days])
+        doy_ebr_mean = pd.concat([l5days, doy_ebr_mean])
+        ebr_5day_clim = pd.DataFrame( index=np.arange(1,367), columns=['ebr_5day_clim'])
+        doy_ebr_mean = doy_ebr_mean.values
+        
+        for i in range(len(doy_ebr_mean)):
+            win = doy_ebr_mean[i:i+2*half_win_2+1]
+            count = np.count_nonzero(~np.isnan(win))
+            if i in ebr_5day_clim.index and count > 0:
+                ebr_5day_clim.iloc[i-1, ebr_5day_clim.columns.get_loc('ebr_5day_clim')] = np.nanmean(win)
+        
+        ebr_5day_clim['DOY'] = ebr_5day_clim.index
+        ebr_5day_clim.index.name = 'date'
+
+        df['DOY'] = df.index.dayofyear
+
+        null_dates = df.loc[df.ebr_corr.isnull(), 'ebr_corr'].index
+        merged = pd.merge(df, ebr_5day_clim, left_on='DOY', right_index=True)
+        merged.loc[null_dates, 'ebr_corr'] = merged.loc[null_dates, 'ebr_5day_clim'].astype(float)
+
+        merged.LE = orig_df.LE
+        merged.H = orig_df.H
+        merged.Rn = orig_df.Rn
+        merged.G = orig_df.G
+        merged.ebr = orig_df.ebr
+
+        merged['ebc_cf'] = 1/merged.ebr_corr
+        merged.loc[ (abs(merged.ebc_cf) >= 2) | (abs(merged.ebc_cf <= 0.5)), 'ebc_cf'] = np.nan
+        
+        merged['LE_corr'] = merged.LE * merged.ebc_cf
+        merged['H_corr'] = merged.H * merged.ebc_cf
+       
+        merged.loc[(merged.LE_corr >= 850) | (merged.LE_corr <= -100), ('LE_corr', 'H_corr', 'ebr_corr', 'ebc_cf')] = np.nan
+        merged['flux_corr'] = merged['LE_corr'] + merged['H_corr']
+
+        df = self.daily_df.rename(columns = self.inv_variable_map)
+
+        df['flux'] = merged.LE + merged.H
+        df['energy'] = merged.Rn - merged.G
+
+        # corrected turbulent flux if given from input data
+        if set(['LE_user_corr','H_user_corr']).issubset(df.columns):
+            df['flux_user_corr'] = df.LE_user_corr + df.H_user_corr 
+            df['ebr_user_corr']=(df.H_user_corr+df.LE_user_corr)/(df.Rn - df.G)
+            df.ebr_user_corr=df.ebr_user_corr.replace([np.inf,-np.inf], np.nan)
+            self.variable_map.update(flux_user_corr = 'flux_user_corr', ebr_user_corr = 'ebr_user_corr')
+        
+        cols = list(set(merged.columns).difference(df.columns))
+        merged = df.join(merged[cols], how='outer')
+        merged.drop('DOY', axis=1, inplace=True)
+
+        self.variable_map.update(
+            energy = 'energy',
+            flux = 'flux',
+            LE_corr = 'LE_corr',
+            H_corr = 'H_corr',
+            flux_corr = 'flux_corr',
+            ebr = 'ebr',
+            ebr_corr = 'ebr_corr',
+            ebc_cf = 'ebc_cf',
+            ebr_5day_clim = 'ebr_5day_clim'
+        )
+
+        self.corrected_daily_df = merged.rename(columns = self.variable_map)
+
+    def _bowen_ratio_correction(self):
+        
+        df = self.daily_df.copy()
+
+        _eb_calc_vars = ('br', 'br_user_corr', 'energy', 'energy_corr', 'ebr', 'ebr_corr', 'ebr_user_corr',
+        'ebc_cf', 'ebr_5day_clim', 'flux', 'flux_corr', 'flux_user_corr','G_corr','H_corr', 'LE_corr', 'Rn_corr')
+
+        vars = [i for i in _eb_calc_vars if i in set(self.daily_df.columns)]
+        if vars:
+            df.drop(columns = vars)
+
+        df = df.rename(columns = self.inv_variable_map)
+
+        df['br'] = df.H / df.LE
+        df['LE_corr'] = (df.Rn - df.G) / (1 + df.br)
+        df['H_corr'] = df.LE_corr * df.br
+        df['flux_corr'] = df.LE_corr + df.H_corr
+
+        
+        if set(['LE_user_corr','H_user_corr']).issubset(df.columns):
+            df['flux_user_corr'] = df.LE_user_corr + df.H_user_corr 
+            df['br_user_corr'] = df.H_user_corr / df.LE_user_corr 
+            df['ebr_user_corr']=(df.H_user_corr+df.LE_user_corr)/(df.Rn - df.G)
+            df.ebr_user_corr=df.ebr_user_corr.replace([np.inf,-np.inf], np.nan)
+
+            self.variable_map.update(
+                flux_user_corr = 'flux_user_corr',
+                ebr_user_corr = 'ebr_user_corr',
+                br_user_corr = 'br_user_corr'
+            )
+        df['ebr'] = (df.H + df.LE) / (df.Rn - df.G)
+        df['ebr_corr'] = (df.H_corr + df.LE_corr) / (df.Rn - df.G)
+        df['energy'] = df.Rn - df.G
+        df['flux'] = df.LE + df.H
+
+        self.variable_map.update(
+            br = 'br',
+            energy = 'energy',
+            flux = 'flux',
+            LE_corr = 'LE_corr',
+            H_corr = 'H_corr',
+            flux_corr = 'flux_corr',
+            ebr = 'ebr',
+            ebr_corr = 'ebr_corr'
+        )
+
+        df.ebr = df.ebr.replace([np.inf, -np.inf], np.nan)
+        df.ebr_corr = df.ebr_corr.replace([np.inf, -np.inf], np.nan)
+
+        self.corrected_daily_df = df.rename(columns = self.variable_map)
+    
+    def _linear_regression(self, y, x, fit_intercept = False, apply_coefs = False):
+        
+        df = self.daily_df.copy()
+
+        _eb_calc_vars = ('br', 'br_user_corr', 'energy', 'energy_corr', 'ebr', 'ebr_corr', 'ebr_user_corr',
+        'ebc_cf', 'ebr_5day_clim', 'flux', 'flux_corr', 'flux_user_corr','G_corr','H_corr', 'LE_corr', 'Rn_corr')
+
+        vars = [i for i in _eb_calc_vars if i in set(self.daily_df.columns)]
+        if vars:
+            df.drop(columns = vars)
+
+        df = df.rename(columns = self.inv_variable_map)
+
+        if not y in df.columns:
+            print(f'ERROR: the dependent variable ({y}) was not found in the dataframe.')
+            return
+        if not isinstance(x, list) and not x in df.columns:
+            print(f'ERROR: the dependent variable ({x}) was not found in the dataframe.')
+            return
+
+        n_x = 1
+        if isinstance(x, list):
+            n_x = len(x)
+            if not set(x).issubset(df.columns):
+                print('ERROR: one or more independent variables ({x}) were not found in the dataframe.')
+                return
+            if n_x > 1:
+                cols = x + [y] 
+                tmp = df[cols].copy()
+        if n_x == 1:
+            tmp = df[[x,y]].copy()
+
+        tmp = tmp.dropna()
+        X = tmp[x]
+        Y = tmp[y]
+
+        model = linear_model.LinearRegression(fit_intercept=fit_intercept)
+        model.fit(X, Y)
+        pred = model.predict(X)
+        r2 = model.score(X,Y)
+        rmse = (np.sqrt(mean_squared_error(Y, pred))).round(2)
+
+        eb_vars = ['LE','H','Rn','G']
+        if apply_coefs and set(tmp.columns).intersection(eb_vars):
+            # calc initial energy balance if regression applied to EB vars
+            df['ebr'] = (df.H + df.LE) / (df.Rn - df.G)
+            df['flux'] = df.H + df.LE
+            df['energy'] = df.Rn - df.G
+
+        results = pd.Series()
+        results.loc['Y (dependent var.)'] = y
+        results.loc['c0 (intercept)'] = model.intercept_
+        
+        for i, c in enumerate(X.columns):
+            results.loc['c{} (coef on {})'.format(i+1, c)] = model.coef_[i].round(3)
+            if apply_coefs:
+                new_var = '{}_corr'.format(c)
+                # ensure correct sign of coef. if applied to EB vars
+                if y in ['G','H','LE'] and c in ['G','H','LE']:
+                    coef = -1 * model.coef_[i]
+                else:
+                    coef = model.coef_[i]
+                print(f'Applying correction factor ({coef.round(3)}) to variable: {c} (renamed as {new_var}')
+
+                df[new_var] = df[c] * coef
+                self.variable_map[new_var] = new_var
+                
+
+        # results.loc['RMSE ({})'.format(self.units.get(y,'na'))] = rmse
+        results.loc['r2 (coef. det.)'] = r2
+        results.loc['n (sample count)'] = len(Y)
+        results = results.to_frame().T
+        # results.index= [self.site_id]
+        results.index.name = 'SITE_ID'
+
+        self.linear_regression_results = results
+
+        if apply_coefs and set(X.columns).intersection(eb_vars):
+            corr = pd.DataFrame()
+            for v in eb_vars:
+                cv = '{}_corr'.format(v)
+                if cv in df:
+                    corr[v] = df[cv] 
+                else:
+                    corr[v] = df[v]
+
+            # not all vars are necessarily different than initial
+            df['ebr_corr'] = (corr.H + corr.LE) / (corr.Rn - corr.G)
+            df['flux_corr'] = corr.H + corr.LE
+            df['energy_corr'] = corr.Rn + corr.G
+            del corr
+
+            self.variable_map.update(
+                energy = 'energy',
+                flux = 'flux',
+                flux_corr = 'flux_corr',
+                energy_corr = 'energy_corr',
+                ebr = 'ebr',
+                ebr_corr = 'ebr_corr'
+            )
+
+        self.corrected_daily_df = df.rename(columns = self.variable_map)
+
+        return results
+
+    def correct_data(self, meth = 'ebr', et_gap_fill = True, y = 'Rn', refET = 'ETr', x = ['G','LE','H'], fit_intercept = False):
+
+        if not isinstance(self._df, pd.DataFrame):
+            print('Please assign a dataframe of acceptable data first!')
+            return
+        if meth not in ['ebr', 'br', 'linear_regression']:
+            err_msg = (f'ERROR: {meth} is not a valid correction option')
+            raise ValueError(err_msg)
+
+        self._calc_rso()
+
+        eb_vars = {'Rn','LE','H','G'}
+        if not eb_vars.issubset(self.variable_map.keys()) or \
+            not eb_vars.issubset(self.daily_df.rename(columns=self.inv_variable_map).columns):
+
+            print('Missing one or more energy balance variables, cannot perform energy balance correction.')
+            self._calc_et()
+            if et_gap_fill:
+                self._ET_gap_fill(et_name='ET', refET=refET)
+            return
+
+        if meth == 'ebr':
+            self._ebr_correction()
+        elif meth == 'br':
+            self._bowen_ratio_correction()
+        else:
+            self._linear_regression(y = y, x = x, fit_intercept = fit_intercept, apply_coefs = True)
+        
+
+        self._calc_et()
+        if et_gap_fill:
+            self._ET_gap_fill(et_name='ET_corr', refET = refET)
+
+        self.inv_variable_map = {v: k for k, v in self.variable_map.items() if (
+                not v.replace('_mean', '') == k or not k in self._df.columns)}
+        
+        if not 'G' in self.inv_variable_map.values():
+            user_G_name = self.variable_map.get('G')
+            self.inv_variable_map[user_G_name] = 'G'
+    
     def set_gridMET_data(self, data):
         '''Sets gridMET data to be the data given
            data must be a pd.Dataframe or a csv        
