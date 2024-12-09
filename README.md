@@ -4,7 +4,7 @@
 Eddy covariance tower data is fundamental for ecosystem research. These datasets can be broadly categorized into energy and carbon variables. Typically, these raw datasets are recorded at 30-minute or 1-hour intervals, and may often contain gaps or record anomalous values, necessitating usage of post-processing tools. Due to group-specific developments, these tools for processing energy and carbon variables often operate separately. This disparity creates bottlenecks, requiring manual adjustments to translate outputs from one system to another. Therefore, there is a need for a unified platform that seamlessly processes raw data for both carbon and energy variables. 
 
 ## Vision & Current Work
-This package is in development stages currently. It builds on top of the `flux-data-qaqc` package (used to post process energy variables) by removing the input text configuration file dependency.
+This package is in development stages currently. It builds on top of the `flux-data-qaqc` package (used to post process energy variables) by removing the input text configuration file dependency. We aim to add support for post processing carbon and water variables shortly
 
 ## How to Use?
 1. Clone repo 
