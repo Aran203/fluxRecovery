@@ -4,7 +4,7 @@ setup(
     name = "fluxease",                 
     version = "0.1",                 
     packages = find_packages(),      
-    install_requires = ["pandas"],
+    install_requires = ["pandas", "xarray", "scikit-learn"],
     author = "Karan Bhalla",            
     description = "A package for eddy flux data post processing",  
     long_description = open("README.md").read(),  
@@ -16,6 +16,6 @@ setup(
         "Operating System :: OS Independent",
     ],
     python_requires = '>=3.6',       
-    license = "TBD",                    # Add licensing              
+    license = "MIT",                               
     include_package_data = True,   
 )
