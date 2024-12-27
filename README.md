@@ -52,5 +52,5 @@ print(demo_ver.corrected_daily_df['flux_corr'])     # printing a column in corre
 ```
 
 ## Contributors
-- Karan Bhalla (karanbhalla204 \<at\> tamu \<DOT\> edu)
-- Debasish Mishra (debmishra \<at\> tamu \<DOT\> edu)
+- Karan Bhalla: Lead Developer (Coding, Execution)  (karanbhalla204 \<at\> tamu \<DOT\> edu)
+- Debasish Mishra: Science Lead (Ideation) (debmishra \<at\> tamu \<DOT\> edu)
