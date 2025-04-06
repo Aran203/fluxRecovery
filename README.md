@@ -1,4 +1,4 @@
-# fluxease (IN DEVELOPMENT)
+# fluxRecovery (IN DEVELOPMENT)
 
 ## Background
 Eddy covariance tower data is fundamental for ecosystem research. These datasets can be broadly categorized into energy and carbon variables. Typically, these raw datasets are recorded at 30-minute or 1-hour intervals, and may often contain gaps or record anomalous values, necessitating usage of post-processing tools. Due to group-specific developments, the tools for processing energy and carbon variables often operate separately. This disparity creates bottlenecks, requiring manual adjustments to translate outputs from one package to another. Therefore, there is a need for a unified package that harmonizes the post-processing steps of raw datasets pertaining to water, carbon and energy variables. 
