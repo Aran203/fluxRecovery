@@ -9,24 +9,33 @@ from datetime import datetime, timedelta
 # ----------------------------------------
 # USER CONFIGURATION
 # ----------------------------------------
+
+# Enter the latitude and longitude of your site
 LATITUDE = 30.5
 LONGITUDE = -96.5
+
+# Set the date range to extract SMAP data for (YYYY-MM-DD)
 START_DATE = "2018-01-01"
-END_DATE = "2018-01-31"
+END_DATE = "2018-01-10"
+
+# Enter your NASA Earthdata Login credentials
 USERNAME = "your_earthdata_username"
 PASSWORD = "your_earthdata_password"
 
-RAW_CSV = "SMAP_SoilMoisture_Timeseries.csv"
-FINAL_CSV = "Final_Reconstructed_Time_Series.csv"
+# Field data Excel file
+excel_filename = "RealData.xlsx"         # Excel file that contains your field data
+field_column_name = "VWC_1_Avg"          # Name of the column that has soil moisture values (e.g., VWC_1_Avg)
+timestamp_column_name = "Timestamp"      # Name of the timestamp column in the Excel file (e.g., Timestamp)
+
+# Output file names
+RAW_CSV = "SMAP_SoilMoisture_Timeseries.csv"          # Raw satellite values only
+FINAL_CSV = "Final_Reconstructed_Time_Series.csv"     # Final interpolated results
 
 # ----------------------------------------
 # CMR API Endpoint for SMAP
 # ----------------------------------------
 CMR_API_URL = "https://cmr.earthdata.nasa.gov/search/granules.json"
 
-# ----------------------------------------
-# Find SMAP File from NASA CMR
-# ----------------------------------------
 def find_smap_file(date):
     params = {
         "short_name": "SPL4SMGP",
@@ -42,9 +51,6 @@ def find_smap_file(date):
             return granules[0]["links"][0]["href"]
     return None
 
-# ----------------------------------------
-# Download File from URL
-# ----------------------------------------
 def download_smap_data(url, filename):
     print(f"Downloading from {url}...")
     response = requests.get(url, stream=True)
@@ -52,21 +58,17 @@ def download_smap_data(url, filename):
         with open(filename, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print(f"✔ Downloaded: {filename}")
+        print(f"Downloaded: {filename}")
         return True
     else:
-        print(f"✘ Download failed with code {response.status_code}")
+        print(f"Download failed with code {response.status_code}")
         return False
 
-# ----------------------------------------
-# Extract Soil Moisture from HDF5 File
-# ----------------------------------------
 def extract_smap_data(filename, lat, lon, date):
     with h5py.File(filename, "r") as f:
         latitudes = f["cell_lat"][:]
         longitudes = f["cell_lon"][:]
         sm_surface = f["Geophysical_Data/sm_surface"][:]
-
         lat_idx, lon_idx = np.unravel_index(
             np.argmin(np.abs(latitudes - lat) + np.abs(longitudes - lon)),
             latitudes.shape
@@ -76,7 +78,7 @@ def extract_smap_data(filename, lat, lon, date):
                 "Surface Moisture (m³/m³)": value}
 
 # ----------------------------------------
-# Download and Extract for Each Day
+# DOWNLOAD + EXTRACT SMAP DATA
 # ----------------------------------------
 all_data = []
 start_dt = datetime.strptime(START_DATE, "%Y-%m-%d")
@@ -100,33 +102,44 @@ while current_dt <= end_dt:
         entry = extract_smap_data(filename, LATITUDE, LONGITUDE, date_str)
         all_data.append(entry)
         os.remove(filename)
-        print(f"🗑️ Deleted file: {filename}")
+        print(f"Deleted: {filename}")
 
     except Exception as e:
-        print(f"⚠️ Error on {date_str}: {e}")
+        print(f"Error on {date_str}: {e}")
 
     current_dt += timedelta(days=1)
 
-# ----------------------------------------
-# Save Raw CSV
-# ----------------------------------------
+# Save raw satellite data
 df_raw = pd.DataFrame(all_data)
 df_raw.to_csv(RAW_CSV, index=False)
-print(f"✔ Raw data saved to {RAW_CSV}")
+print(f"Raw SMAP data saved to: {RAW_CSV}")
 
 # ----------------------------------------
-# Interpolate with Field-Priority Logic
+# LOAD FIELD DATA FROM EXCEL
 # ----------------------------------------
-df = df_raw.copy()
-df["Date"] = pd.to_datetime(df["Date"])
-df = df.rename(columns={"Surface Moisture (m³/m³)": "Field_Measurement"})
-df["Satellite_Anomaly"] = df["Field_Measurement"]
+field_df = pd.read_excel(excel_filename, sheet_name=0)
+field_df = field_df[[timestamp_column_name, field_column_name]]
+field_df = field_df.rename(columns={
+    timestamp_column_name: "Date",
+    field_column_name: "Field_Measurement"
+})
+field_df["Date"] = pd.to_datetime(field_df["Date"])
 
+# ----------------------------------------
+# LOAD SATELLITE DATA FROM CSV
+# ----------------------------------------
+sat_df = df_raw[["Date", "Surface Moisture (m³/m³)"]]
+sat_df = sat_df.rename(columns={"Surface Moisture (m³/m³)": "Satellite_Anomaly"})
+sat_df["Date"] = pd.to_datetime(sat_df["Date"])
+
+# ----------------------------------------
+# INTERPOLATION FUNCTION (FIELD PRIORITY)
+# ----------------------------------------
 def process_data_with_field_priority(df):
     df = df.sort_values("Date")
     df["Value"] = df["Field_Measurement"].combine_first(df["Satellite_Anomaly"])
-
     df["Interpolated_Value"] = df["Field_Measurement"]
+
     for i in range(len(df)):
         if pd.isna(df.loc[i, "Field_Measurement"]):
             sat_val = df.loc[i, "Satellite_Anomaly"]
@@ -136,26 +149,29 @@ def process_data_with_field_priority(df):
     df["Interpolated_Value"] = df["Interpolated_Value"].interpolate("linear", limit_direction="both")
     return df
 
-df_interp = process_data_with_field_priority(df)
+# Merge and interpolate
+combined_df = pd.merge(sat_df, field_df, on="Date", how="outer")
+combined_df = process_data_with_field_priority(combined_df)
 
 # ----------------------------------------
-# Save Final Clean Time Series
+# SAVE FINAL CLEAN TIME SERIES
 # ----------------------------------------
-full_dates = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
+full_dates = pd.date_range(combined_df["Date"].min(), combined_df["Date"].max(), freq="D")
 df_final = pd.DataFrame({"Date": full_dates})
-df_final = df_final.merge(df_interp[["Date", "Interpolated_Value"]], on="Date", how="left")
+df_final = df_final.merge(combined_df[["Date", "Interpolated_Value"]], on="Date", how="left")
 df_final["Interpolated_Value"] = df_final["Interpolated_Value"].interpolate("linear", limit_direction="both")
 df_final.to_csv(FINAL_CSV, index=False)
-print(f"✔ Final interpolated series saved to {FINAL_CSV}")
+print(f"Final interpolated time series saved to: {FINAL_CSV}")
 
 # ----------------------------------------
-# Plot Final Time Series
+# PLOT THE RESULT
 # ----------------------------------------
 plt.figure(figsize=(12, 6))
-plt.plot(df_final["Date"], df_final["Interpolated_Value"], color='green', linewidth=2, label="Interpolated SMAP Series")
+plt.plot(df_final["Date"], df_final["Interpolated_Value"], color='green', linewidth=2, label="Interpolated Time Series")
 plt.xlabel("Date")
 plt.ylabel("Soil Moisture (m³/m³)")
-plt.title("Interpolated SMAP Soil Moisture Time Series")
+plt.title("Field-Priority Interpolated Soil Moisture")
 plt.legend()
 plt.grid(True)
 plt.show()
+
