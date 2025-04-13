@@ -1,6 +1,3 @@
-# SMAP + Field Data Depth-Aware, Trend-Normalized Interpolation
-# With Dynamic or Fixed Weighting & Full Logging
-
 import os
 import h5py
 import requests
@@ -9,36 +6,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
-# ------------------------------------------------------------
-# USER SETTINGS
-# ------------------------------------------------------------
-
+# -------------------- USER SETTINGS --------------------
 LATITUDE = 30.5
 LONGITUDE = -96.5
 START_DATE = "2018-01-01"
-END_DATE = "2018-01-5"
-
+END_DATE = "2018-12-31"  
 USERNAME = "your_earthdata_username"
 PASSWORD = "your_earthdata_password"
 
-EXCEL_FILENAME = "RealData.xlsx"      # Field data file
-TIMESTAMP_COLUMN = "Timestamp"        # Timestamp col
-FIELD_COLUMN_NAME = "VWC_1_Avg"       # e.g. 5 cm
+EXCEL_FILENAME = "RealData.xlsx"      # Field data file from Excel
+TIMESTAMP_COLUMN = "Timestamp"        # Name of timestamp column in Excel
+FIELD_COLUMN_NAME = "VWC_1_Avg"         # Field measurement (e.g., 5 cm)
 DEPTH_CM = 5
 
-# Weighting mode: "fixed" or "dynamic"
-WEIGHTING_MODE = "dynamic"
-FIXED_WEIGHTS = (0.3, 0.7)  # (satellite, field)
+FINAL_CSV = "Final_Reconstructed_Time_Series.csv"  # Final CSV will contain only Date and Final
 
-# Dynamic weighting parameters
-ROLLING_WINDOW_DAYS = 3
-BETA = 1
-EPSILON = 1e-6
-
-RAW_CSV = "SMAP_SoilMoisture_Timeseries.csv"
-FINAL_CSV = "Final_Reconstructed_Time_Series.csv"
-
-# Determine which SMAP variable to use
+# -------------------- SMAP SETUP --------------------
 if DEPTH_CM <= 5:
     SMAP_VARIABLE = "sm_surface"
     sat_layer_desc = "Surface (0-5 cm)"
@@ -50,230 +33,117 @@ else:
     sat_layer_desc = "Surface fallback (no exact match)"
     print(f"Note: No exact SMAP match for {DEPTH_CM} cm. Using surface as fallback.")
 
-# ------------------------------------------------------------
-# NASA CMR API
-# ------------------------------------------------------------
 CMR_API_URL = "https://cmr.earthdata.nasa.gov/search/granules.json"
 
-def find_smap_file(date):
-    """Query NASA CMR for SMAP L4 data on the given date."""
+# -------------------- NASA CMR API FUNCTIONS --------------------
+def find_smap_file(date_str):
     params = {
         "short_name": "SPL4SMGP",
         "version": "007",
-        "temporal": f"{date}T00:00:00Z,{date}T23:59:59Z",
+        "temporal": f"{date_str}T00:00:00Z,{date_str}T23:59:59Z",
         "page_size": 1,
         "sort_key": "-start_date",
     }
-    response = requests.get(CMR_API_URL, params=params)
-    if response.status_code == 200:
-        granules = response.json().get("feed", {}).get("entry", [])
-        if granules:
-            return granules[0]["links"][0]["href"]
+    r = requests.get(CMR_API_URL, params=params)
+    if r.status_code == 200:
+        entries = r.json().get("feed", {}).get("entry", [])
+        if entries:
+            return entries[0]["links"][0]["href"]
     return None
 
-def download_smap_data(url, filename):
-    print(f"Downloading SMAP file for date: {filename.split('.')[0]}...")
-    response = requests.get(url, stream=True, auth=(USERNAME, PASSWORD))
-    if response.status_code == 200:
+def download_smap_file(url, filename):
+    r = requests.get(url, stream=True, auth=(USERNAME, PASSWORD))
+    if r.status_code == 200:
         with open(filename, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
+            for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print(f"Downloaded {filename}")
         return True
-    else:
-        print(f"Failed to download {filename} (HTTP {response.status_code})")
-        return False
+    return False
 
-def extract_smap_data(filename, lat, lon, date):
-    """Extract the chosen SMAP variable (surface or rootzone) at lat/lon."""
-    with h5py.File(filename, "r") as f:
-        latitudes = f["cell_lat"][:]
-        longitudes = f["cell_lon"][:]
-        soil_data = f[f"Geophysical_Data/{SMAP_VARIABLE}"][:]
+def extract_smap_value(fname, lat, lon, date_str):
+    with h5py.File(fname, "r") as f:
+        lats = f["cell_lat"][:]
+        lons = f["cell_lon"][:]
+        data = f[f"Geophysical_Data/{SMAP_VARIABLE}"][:]
         lat_idx, lon_idx = np.unravel_index(
-            np.argmin(np.abs(latitudes - lat) + np.abs(longitudes - lon)),
-            latitudes.shape
+            np.argmin(np.abs(lats - lat) + np.abs(lons - lon)),
+            lats.shape
         )
-        return {"Date": date, "Satellite_Anomaly": soil_data[lat_idx, lon_idx]}
+        return {"Date": date_str, "Satellite": float(data[lat_idx, lon_idx])}
 
-# ------------------------------------------------------------
-# MAIN SCRIPT
-# ------------------------------------------------------------
+# -------------------- LOAD FIELD DATA --------------------
+print("Loading field data from Excel...")
+df_field = pd.read_excel(EXCEL_FILENAME)
+df_field = df_field.rename(columns={TIMESTAMP_COLUMN: "Date", FIELD_COLUMN_NAME: "Field"})
+df_field["Date"] = pd.to_datetime(df_field["Date"])
+df_field = df_field.drop_duplicates(subset="Date").sort_values("Date")
 
-print("--------------------------------------------------")
-print(f"SMAP Data Fusion for Depth: {DEPTH_CM} cm")
-print(f"Satellite source layer: {SMAP_VARIABLE} ({sat_layer_desc})")
-print(f"Date range: {START_DATE} to {END_DATE}")
-print("--------------------------------------------------")
-
+# Build a full 30-min time base for the period
 start_dt = pd.to_datetime(START_DATE)
 end_dt = pd.to_datetime(END_DATE)
+full_timebase = pd.date_range(start=start_dt, end=end_dt + timedelta(days=1), freq="30min")[:-1]
+df = pd.DataFrame({"Date": full_timebase})
+df = pd.merge(df, df_field, on="Date", how="left")
 
-# 1) Download and Extract SMAP
-print("Starting SMAP data download...")
-all_data = []
+# -------------------- DOWNLOAD SMAP DATA --------------------
+print("Downloading SMAP data...")
+smap_records = []
 current_dt = start_dt
-file_count = 0
-
 while current_dt <= end_dt:
     date_str = current_dt.strftime("%Y-%m-%d")
     try:
         url = find_smap_file(date_str)
-        if not url:
-            print(f"No SMAP file found for {date_str}")
-            current_dt += timedelta(days=1)
-            continue
-        
-        filename = url.split("/")[-1]
-        if not download_smap_data(url, filename):
-            current_dt += timedelta(days=1)
-            continue
-        
-        entry = extract_smap_data(filename, LATITUDE, LONGITUDE, date_str)
-        all_data.append(entry)
-        os.remove(filename)
-        print(f"Deleted temporary file: {filename}")
-        file_count += 1
-        
+        if url:
+            fname = url.split("/")[-1]
+            print(f"  {date_str} -> {fname}")
+            if download_smap_file(url, fname):
+                entry = extract_smap_value(fname, LATITUDE, LONGITUDE, date_str)
+                smap_records.append(entry)
+                os.remove(fname)
+            else:
+                print(f"  Failed to download SMAP for {date_str}")
+        else:
+            print(f"  No SMAP file found for {date_str}")
     except Exception as e:
-        print(f"Error on {date_str}: {e}")
-    
+        print(f"  ERROR on {date_str}: {e}")
     current_dt += timedelta(days=1)
 
-sat_df = pd.DataFrame(all_data)
-sat_df["Date"] = pd.to_datetime(sat_df["Date"])
+df_smap = pd.DataFrame(smap_records)
+df_smap["Date"] = pd.to_datetime(df_smap["Date"])
+df_smap = df_smap.set_index("Date").resample("30min").ffill().reset_index()
+df = pd.merge(df, df_smap, on="Date", how="left")
 
-print("--------------------------------------------------")
-print(f"Downloaded SMAP files for {file_count} days within {START_DATE} - {END_DATE}.")
-sat_df.to_csv(RAW_CSV, index=False)
-print(f"Satellite data (trend only) saved to {RAW_CSV}")
-
-# 2) Load Field Data (Raw + Daily)
-print("Loading field data from Excel...")
-raw_field_df = pd.read_excel(EXCEL_FILENAME)
-raw_field_df = raw_field_df.rename(columns={TIMESTAMP_COLUMN: "Date", FIELD_COLUMN_NAME: "Field_Measurement"})
-raw_field_df["Date"] = pd.to_datetime(raw_field_df["Date"])
-
-# Keep only relevant date range in raw
-raw_field_df = raw_field_df[(raw_field_df["Date"] >= start_dt) & (raw_field_df["Date"] <= end_dt)]
-
-# Make daily-averaged field data
-daily_field_df = raw_field_df.set_index("Date").resample("D").mean(numeric_only=True).reset_index()
-
-# 3) Normalize Satellite Trend
-field_avg = (daily_field_df["Field_Measurement"].max() + daily_field_df["Field_Measurement"].min()) / 2
-smap_avg = (sat_df["Satellite_Anomaly"].max() + sat_df["Satellite_Anomaly"].min()) / 2
-sat_df["Satellite_Anomaly"] += (field_avg - smap_avg)
-
-# 4) Merge and Determine Weights
-combined_df = pd.merge(sat_df, daily_field_df, on="Date", how="outer").sort_values("Date")
-
-# Rolling std for dynamic
-sat_rolling_std = combined_df["Satellite_Anomaly"].rolling(window=ROLLING_WINDOW_DAYS, min_periods=1, center=True).std()
-ground_rolling_std = combined_df["Field_Measurement"].rolling(window=ROLLING_WINDOW_DAYS, min_periods=1, center=True).std()
-
-if WEIGHTING_MODE == "dynamic":
-    ratio = sat_rolling_std / (ground_rolling_std + EPSILON)
-    combined_df["w_sat"] = 1 / (1 + (ratio ** BETA))
-    combined_df["w_ground"] = 1 - combined_df["w_sat"]
+# -------------------- ALIGN SATELLITE TO FIELD --------------------
+# Calculate the mean offset on days when both field and satellite data are available
+common = df.dropna(subset=["Field", "Satellite"])
+if not common.empty:
+    offset = common["Field"].mean() - common["Satellite"].mean()
+    df["Satellite_Aligned"] = df["Satellite"] + offset
 else:
-    w_sat, w_ground = FIXED_WEIGHTS
-    combined_df["w_sat"] = w_sat
-    combined_df["w_ground"] = w_ground
+    df["Satellite_Aligned"] = df["Satellite"]
 
-# 5) Weighted Interpolation
-def interpolate_weighted(df):
-    df = df.copy().reset_index(drop=True)
-    df["Interpolated_Value"] = df["Field_Measurement"]  # Start
-    for i in range(len(df)):
-        if pd.isna(df.loc[i, "Field_Measurement"]):
-            sat_val = df.loc[i, "Satellite_Anomaly"]
-            # Attempt to get a linear field interpolation
-            interp = df["Field_Measurement"].interpolate("linear").loc[i]
-            wsat = df.loc[i, "w_sat"]
-            wgrd = df.loc[i, "w_ground"]
-            if not pd.isna(sat_val) and not pd.isna(interp):
-                df.loc[i, "Interpolated_Value"] = wsat * sat_val + wgrd * interp
-            else:
-                df.loc[i, "Interpolated_Value"] = interp
-    df["Interpolated_Value"] = df["Interpolated_Value"].interpolate("linear", limit_direction="both")
-    return df
+# -------------------- FINAL INTERPOLATION --------------------
+# For any missing field values, we take the aligned satellite value,
+# then use linear interpolation to fill any remaining gaps.
+df["Final"] = df["Field"]
+mask = df["Field"].isna() & df["Satellite_Aligned"].notna()
+df.loc[mask, "Final"] = df.loc[mask, "Satellite_Aligned"]
+df["Final"] = df["Final"].interpolate("linear", limit_direction="both")
 
-combined_df = interpolate_weighted(combined_df)
+# -------------------- OUTPUT ONLY DATE AND FINAL --------------------
+final_output = df[["Date", "Final"]].copy()
+final_output.to_csv(FINAL_CSV, index=False)
+print(f"Final CSV saved to {FINAL_CSV}")
 
-# 6) Make Final Daily DF
-full_dates = pd.date_range(start=start_dt, end=end_dt, freq="D")
-df_final = pd.DataFrame({"Date": full_dates})
-df_final = df_final.merge(combined_df[["Date", "Interpolated_Value"]], on="Date", how="left")
-df_final["Interpolated_Value"] = df_final["Interpolated_Value"].interpolate("linear", limit_direction="both")
-
-# 7) Stats on Weighted Approach
-if WEIGHTING_MODE == "dynamic":
-    mean_ws = combined_df["w_sat"].mean()
-    min_ws = combined_df["w_sat"].min()
-    max_ws = combined_df["w_sat"].max()
-    print("--------------------------------------------------")
-    print("Dynamic Weighting Stats:")
-    print(f"Rolling window: {ROLLING_WINDOW_DAYS} days | Beta={BETA} | Epsilon={EPSILON}")
-    print(f"Mean satellite weight: {mean_ws:.3f} | Min: {min_ws:.3f} | Max: {max_ws:.3f}")
-    print(f"Mean ground weight: {1-mean_ws:.3f}")
-elif WEIGHTING_MODE == "fixed":
-    print("--------------------------------------------------")
-    print(f"Fixed weights: Satellite={FIXED_WEIGHTS[0]}, Ground={FIXED_WEIGHTS[1]}")
-
-# 8) Save Final CSV
-df_final.to_csv(FINAL_CSV, index=False)
-print("--------------------------------------------------")
-print(f"Final daily time series saved to {FINAL_CSV}")
-
-# Field data coverage
-valid_days = daily_field_df["Field_Measurement"].notna().sum()
-total_days = len(daily_field_df)
-print(f"Daily field data coverage: {valid_days} / {total_days} days have measurements.")
-
-# 9) Plot
-print("Plotting result now...")
-plt.figure(figsize=(12, 6))
-
-# Green line: Interpolated time series
-plt.plot(df_final["Date"], df_final["Interpolated_Value"], color='green', label="Interpolated Time Series")
-
-# Blue dots: daily-averaged field data
-daily_mask = combined_df["Field_Measurement"].notna()
-plt.scatter(
-    combined_df.loc[daily_mask, "Date"], 
-    combined_df.loc[daily_mask, "Field_Measurement"], 
-    color='blue', 
-    label="Daily Field Data"
-)
-
-# Orange dots: satellite trend
-sat_mask = combined_df["Satellite_Anomaly"].notna()
-plt.scatter(
-    combined_df.loc[sat_mask, "Date"], 
-    combined_df.loc[sat_mask, "Satellite_Anomaly"], 
-    color='orange', 
-    label="Satellite Trend"
-)
-
-# Gray dots: raw 30-min data
-raw_mask = raw_field_df["Field_Measurement"].notna()
-plt.scatter(
-    raw_field_df.loc[raw_mask, "Date"], 
-    raw_field_df.loc[raw_mask, "Field_Measurement"], 
-    color='gray', alpha=0.5, s=10, 
-    label="Raw 30-min Field Data"
-)
-
+# -------------------- PLOT THE FINAL RESULT --------------------
+plt.figure(figsize=(16,6))
+plt.plot(df["Date"], df["Final"], label="Final Interpolated", color="green")
+plt.plot(df["Date"], df["Satellite_Aligned"], label="Aligned SMAP", color="orange", linestyle="--")
+plt.scatter(df["Date"], df["Field"], label="Raw Field", s=5, color="gray", alpha=0.6)
+plt.title("Final Soil Moisture — Field + SMAP Fusion")
 plt.xlabel("Date")
 plt.ylabel("Soil Moisture (m³/m³)")
-plt.title(f"Interpolated Soil Moisture at {DEPTH_CM} cm - {WEIGHTING_MODE.capitalize()} Weighting")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
 plt.show()
-
-print("--------------------------------------------------")
-print(f"Process complete for {START_DATE} to {END_DATE} at depth {DEPTH_CM} cm.")
-print("Plot displayed with daily field data, raw 30-min field data, satellite trend, and final interpolation.")
-print("--------------------------------------------------")
