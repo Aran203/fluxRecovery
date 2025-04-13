@@ -6,138 +6,131 @@ import pandas as pd
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
-# ----------------------------------------
-# USER CONFIGURATION
-# ----------------------------------------
+# -------------------- USER CONFIG --------------------
 LATITUDE = 30.5
 LONGITUDE = -96.5
-START_YEAR = 2023
-END_YEAR = 2023
-USERNAME = "your_earthdata_username"
-PASSWORD = "your_earthdata_password"
-node_number = 1  # Set to 1, 2, or 3
-excel_file = "RealData.xlsx"
+START_DATE = "2018-04-01"
+END_DATE = "2018-05-15"
 
-# ----------------------------------------
-# FUNCTION: Generate IMERG URL
-# ----------------------------------------
+EXCEL_FILE = "RealData.xlsx"
+TIMESTAMP_COLUMN = "Timestamp"
+FIELD_COLUMN = "Precip1_tot"
+FIELD_WEIGHT = 0.7
+
+# -------------------- IMERG URL --------------------
 def generate_imerg_url(date):
-    year, month, day = date.strftime("%Y"), date.strftime("%m"), date.strftime("%d")
-    filename = f"3B-DAY.MS.MRG.3IMERG.{year}{month}{day}-S000000-E235959.V07B.nc4"
-    url = f"https://data.gesdisc.earthdata.nasa.gov/data/GPM_L3/GPM_3IMERGDF.07/{year}/{month}/{filename}"
-    return url, filename
+    ymd = date.strftime("%Y%m%d")
+    y, m = date.strftime("%Y"), date.strftime("%m")
+    fname = f"3B-DAY.MS.MRG.3IMERG.{ymd}-S000000-E235959.V07B.nc4"
+    url = f"https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDF.07/{y}/{m}/{fname}"
+    return url, fname
 
-# ----------------------------------------
-# FUNCTION: Download File
-# ----------------------------------------
-def download_imerg_data(url, local_filename, username, password):
-    with requests.get(url, auth=(username, password), stream=True) as response:
-        if response.status_code == 200:
-            with open(local_filename, "wb") as file:
-                for chunk in response.iter_content(chunk_size=8192):
-                    file.write(chunk)
-            return True
-        else:
-            return False
+# -------------------- DOWNLOAD FILE --------------------
+def download_file(url, filename):
+    r = requests.get(url, stream=True)
+    if r.status_code == 200:
+        with open(filename, "wb") as f:
+            for chunk in r.iter_content(8192):
+                f.write(chunk)
+        return True
+    return False
 
-# ----------------------------------------
-# FUNCTION: Extract Precip Value
-# ----------------------------------------
-def extract_precipitation(filename, lat, lon, date):
+# -------------------- EXTRACT IMERG VALUE --------------------
+def extract_precip(filename, lat, lon, date):
     with h5py.File(filename, "r") as f:
         latitudes = f["lat"][:]
         longitudes = f["lon"][:]
-        precipitation = f["precipitation"][:]  # Shape (1, lat, lon)
-
+        precip = f["precipitation"][:]  # (1, lat, lon)
         lat_idx = np.argmin(np.abs(latitudes - lat))
         lon_idx = np.argmin(np.abs(longitudes - lon))
-        value = precipitation[0, lat_idx, lon_idx]
+        return {"Date": date, "IMERG": float(precip[0, lat_idx, lon_idx])}
 
-        return {"Date": date, "Satellite_Anomaly": value}
+# -------------------- LOAD FIELD DATA --------------------
+def load_field_data(filepath):
+    df = pd.read_excel(filepath)
+    df.columns = df.columns.str.strip()
+    if TIMESTAMP_COLUMN not in df.columns or FIELD_COLUMN not in df.columns:
+        raise ValueError(f"Missing columns: {TIMESTAMP_COLUMN} or {FIELD_COLUMN}")
+    df["Date"] = pd.to_datetime(df[TIMESTAMP_COLUMN]).dt.floor("D")
+    df["Field"] = pd.to_numeric(df[FIELD_COLUMN], errors="coerce")
+    daily_df = df.groupby("Date")["Field"].sum().reset_index()
+    print(f"🧪 Field data range: {daily_df['Date'].min().date()} to {daily_df['Date'].max().date()}")
+    return daily_df
 
-# ----------------------------------------
-# FUNCTION: Load Field Data
-# ----------------------------------------
-def load_field_data(excel_file, node_number):
-    field_data = pd.read_excel(excel_file)
-    field_data["Date"] = pd.to_datetime(field_data["Date"])
-    if node_number < 1 or node_number > 3:
-        raise ValueError("Node number must be 1, 2, or 3.")
-    column_name = field_data.columns[node_number]
-    return field_data[["Date", column_name]].rename(columns={column_name: "Field_Measurement"})
+# -------------------- BLEND FIELD + SAT --------------------
+def blend_field_sat(sat_df, field_df):
+    full_range = pd.date_range(start=START_DATE, end=END_DATE, freq="D")
+    df = pd.DataFrame({"Date": full_range})
+    df = df.merge(sat_df, on="Date", how="left")
+    df = df.merge(field_df, on="Date", how="left")
 
-# ----------------------------------------
-# FUNCTION: Process Field Priority
-# ----------------------------------------
-def process_data_with_field_priority(satellite_df, field_df):
-    df = pd.merge(satellite_df, field_df, on="Date", how="outer").sort_values("Date")
-    df["Value"] = df["Field_Measurement"].combine_first(df["Satellite_Anomaly"])
-
-    # Weighted interpolation blend
-    df["Interpolated_Value"] = df["Field_Measurement"]
+    df["Blended"] = df["Field"]
     for i in range(len(df)):
-        if pd.isna(df.loc[i, "Field_Measurement"]):
-            sat_val = df.loc[i, "Satellite_Anomaly"]
-            interp_field = df["Field_Measurement"].interpolate("linear").loc[i]
-            df.loc[i, "Interpolated_Value"] = 0.3 * sat_val + 0.7 * interp_field
+        if pd.isna(df.iloc[i]["Field"]):
+            field_interp = df["Field"].interpolate("linear").iloc[i]
+            sat_val = df.iloc[i]["IMERG"]
+            if not pd.isna(sat_val):
+                blended = FIELD_WEIGHT * field_interp + (1 - FIELD_WEIGHT) * sat_val
+            else:
+                blended = field_interp
+            df.iloc[i, df.columns.get_loc("Blended")] = blended
 
-    # Final interpolation (forward + backward fill)
-    df["Interpolated_Value"] = df["Interpolated_Value"].interpolate("linear", limit_direction="both")
+    df["Blended"] = df["Blended"].interpolate("linear", limit_direction="both")
+
+    print("\n📊 Final Blending Overview:")
+    print(df[["Date", "Field", "IMERG", "Blended"]].to_string(index=False))
+
     return df
 
-# ----------------------------------------
-# FUNCTION: Save Final CSV
-# ----------------------------------------
-def save_final_series(df, filename="Final_Reconstructed_Time_Series.csv"):
-    full_dates = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
-    full_df = pd.DataFrame({"Date": full_dates})
-    full_df = full_df.merge(df[["Date", "Interpolated_Value"]], on="Date", how="left")
-    full_df["Interpolated_Value"] = full_df["Interpolated_Value"].interpolate("linear", limit_direction="both")
-    full_df.to_csv(filename, index=False)
-    print(f"✔ Final data saved to {filename}")
+# -------------------- MAIN --------------------
+print("📥 Downloading IMERG data...")
+sat_data = []
+current = pd.to_datetime(START_DATE)
+end_dt = pd.to_datetime(END_DATE)
 
-# ----------------------------------------
-# MAIN EXECUTION
-# ----------------------------------------
-all_data = []
-for year in range(START_YEAR, END_YEAR + 1):
-    start_date = datetime(year, 1, 1)
-    end_date = datetime(year, 12, 31)
-    current = start_date
+while current <= end_dt:
+    url, fname = generate_imerg_url(current)
+    print(f"→ {current.date()}: ", end="")
+    try:
+        if download_file(url, fname):
+            row = extract_precip(fname, LATITUDE, LONGITUDE, current)
+            sat_data.append(row)
+            os.remove(fname)
+            print(f"✓ {row['IMERG']:.2f} mm")
+        else:
+            print("✘ Failed")
+    except Exception as e:
+        print(f"⚠ ERROR: {e}")
+    current += timedelta(days=1)
 
-    while current <= end_date:
-        date_str = current.strftime("%Y-%m-%d")
-        try:
-            url, filename = generate_imerg_url(current)
-            if download_imerg_data(url, filename, USERNAME, PASSWORD):
-                data = extract_precipitation(filename, LATITUDE, LONGITUDE, date_str)
-                all_data.append(data)
-                os.remove(filename)
-            else:
-                print(f"✘ Failed to download {filename}")
-        except Exception as e:
-            print(f"⚠ Error on {date_str}: {e}")
-        current += timedelta(days=1)
+sat_df = pd.DataFrame(sat_data)
+sat_df["Date"] = pd.to_datetime(sat_df["Date"])
+field_df = load_field_data(EXCEL_FILE)
+final_df = blend_field_sat(sat_df, field_df)
 
-# Create satellite DataFrame
-satellite_df = pd.DataFrame(all_data)
-satellite_df["Date"] = pd.to_datetime(satellite_df["Date"])
+# -------------------- SAVE & BAR PLOT --------------------
+final_df.to_csv("Final_Reconstructed_Precip.csv", index=False)
+print("✔ Saved Final_Reconstructed_Precip.csv")
 
-# Load field data from Excel
-field_df = load_field_data(excel_file, node_number)
+plt.figure(figsize=(14, 6))
 
-# Combine and interpolate
-combined_df = process_data_with_field_priority(satellite_df, field_df)
+# Bar width and x-offsets
+bar_width = 0.25
+dates = final_df["Date"]
+x = np.arange(len(dates))
 
-# Save final result
-save_final_series(combined_df)
+# Bars for each source
+plt.bar(x - bar_width, final_df["Field"], width=bar_width, label="Field", color="black")
+plt.bar(x, final_df["Blended"], width=bar_width, label="Interpolated", color="skyblue")
+plt.bar(x + bar_width, final_df["IMERG"], width=bar_width, label="IMERG", color="orange")
 
-# Plot result
-plt.figure(figsize=(12, 6))
-plt.plot(combined_df["Date"], combined_df["Interpolated_Value"], color='green', linewidth=2, label="IMERG Reconstructed Series")
+# X-axis ticks
+plt.xticks(ticks=x[::max(1, len(x)//15)], labels=dates.dt.strftime('%Y-%m-%d')[::max(1, len(x)//15)], rotation=45)
+
+plt.title("Daily Precipitation — IMERG + Field Fusion (All Bars)")
 plt.xlabel("Date")
-plt.ylabel("Interpolated Precipitation (mm/day)")
-plt.title("IMERG + Field Blended Precipitation")
+plt.ylabel("Precipitation (mm/day)")
 plt.legend()
-plt.grid(True)
+plt.tight_layout()
+plt.grid(True, axis='y')
 plt.show()
