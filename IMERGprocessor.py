@@ -16,6 +16,9 @@ EXCEL_FILE = "RealData.xlsx"
 TIMESTAMP_COLUMN = "Timestamp"
 FIELD_COLUMN = "Precip1_tot"
 FIELD_WEIGHT = 0.7
+WEIGHT_MODE = "dynamic"  # options: "field_only", "static", "dynamic"
+BETA = 2
+EPSILON = 0.1
 
 # -------------------- IMERG URL --------------------
 def generate_imerg_url(date):
@@ -58,21 +61,41 @@ def load_field_data(filepath):
     return daily_df
 
 # -------------------- BLEND FIELD + SAT --------------------
-def blend_field_sat(sat_df, field_df):
+def blend_field_sat(sat_df, field_df, weight_mode="field_only", beta=2, epsilon=0.1):
     full_range = pd.date_range(start=START_DATE, end=END_DATE, freq="D")
     df = pd.DataFrame({"Date": full_range})
     df = df.merge(sat_df, on="Date", how="left")
     df = df.merge(field_df, on="Date", how="left")
 
+    df["SD_sat"] = df["IMERG"].rolling(window=7, center=True, min_periods=1).std()
+    df["SD_field"] = df["Field"].rolling(window=7, center=True, min_periods=1).std()
     df["Blended"] = df["Field"]
+
     for i in range(len(df)):
-        if pd.isna(df.iloc[i]["Field"]):
+        field_val = df.iloc[i]["Field"]
+        sat_val = df.iloc[i]["IMERG"]
+
+        if pd.isna(field_val):
             field_interp = df["Field"].interpolate("linear").iloc[i]
-            sat_val = df.iloc[i]["IMERG"]
+
+            if weight_mode == "static":
+                w = FIELD_WEIGHT
+            elif weight_mode == "dynamic":
+                sd_sat = df.iloc[i]["SD_sat"]
+                sd_field = df.iloc[i]["SD_field"]
+                if pd.isna(sd_sat) or pd.isna(sd_field) or sd_field + epsilon == 0:
+                    w = 0.5
+                else:
+                    ratio = (sd_sat / (sd_field + epsilon)) ** beta
+                    w = 1 / (1 + ratio)
+            else:  # "field_only"
+                w = 1 if not pd.isna(field_interp) else 0
+
             if not pd.isna(sat_val):
-                blended = FIELD_WEIGHT * field_interp + (1 - FIELD_WEIGHT) * sat_val
+                blended = w * field_interp + (1 - w) * sat_val
             else:
                 blended = field_interp
+
             df.iloc[i, df.columns.get_loc("Blended")] = blended
 
     df["Blended"] = df["Blended"].interpolate("linear", limit_direction="both")
@@ -106,7 +129,7 @@ while current <= end_dt:
 sat_df = pd.DataFrame(sat_data)
 sat_df["Date"] = pd.to_datetime(sat_df["Date"])
 field_df = load_field_data(EXCEL_FILE)
-final_df = blend_field_sat(sat_df, field_df)
+final_df = blend_field_sat(sat_df, field_df, weight_mode=WEIGHT_MODE, beta=BETA, epsilon=EPSILON)
 
 # -------------------- SAVE & BAR PLOT --------------------
 final_df.to_csv("Final_Reconstructed_Precip.csv", index=False)
@@ -114,19 +137,15 @@ print("✔ Saved Final_Reconstructed_Precip.csv")
 
 plt.figure(figsize=(14, 6))
 
-# Bar width and x-offsets
 bar_width = 0.25
 dates = final_df["Date"]
 x = np.arange(len(dates))
 
-# Bars for each source
 plt.bar(x - bar_width, final_df["Field"], width=bar_width, label="Field", color="black")
 plt.bar(x, final_df["Blended"], width=bar_width, label="Interpolated", color="skyblue")
 plt.bar(x + bar_width, final_df["IMERG"], width=bar_width, label="IMERG", color="orange")
 
-# X-axis ticks
 plt.xticks(ticks=x[::max(1, len(x)//15)], labels=dates.dt.strftime('%Y-%m-%d')[::max(1, len(x)//15)], rotation=45)
-
 plt.title("Daily Precipitation — IMERG + Field Fusion (All Bars)")
 plt.xlabel("Date")
 plt.ylabel("Precipitation (mm/day)")
