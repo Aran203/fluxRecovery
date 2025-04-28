@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name = "fluxease",                 
+    name = "fluxRecovery",                 
     version = "0.1",                 
     packages = find_packages(),      
     install_requires = ["pandas", "xarray", "scikit-learn"],
@@ -9,7 +9,7 @@ setup(
     description = "A package for eddy flux data post processing",  
     long_description = open("README.md").read(),  
     long_description_content_type = "text/markdown", 
-    url = "https://github.com/Aran203/fluxease",  
+    url = "https://github.com/Aran203/fluxRecovery",  
     classifiers = [                  
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
