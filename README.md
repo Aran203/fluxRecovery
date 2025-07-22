@@ -4,7 +4,7 @@
 Field observations (for example Eddy covariance towers, ground observations, soil moisture sensors) is fundamental for ecosystem research. These datasets can be broadly categorized into three categories: (1) energy, (2) water, and (3) carbon variables. Typically, these raw datasets are recorded at 30-minute or 1-hour intervals, and may often contain gaps or record anomalous values, necessitating usage of post-processing tools. Due to group-specific developments, the tools for processing these variables often operate separately. This disparity creates bottlenecks, requiring manual adjustments to translate outputs from one package to another. Therefore, there is a need for a unified package that harmonizes the post-processing steps of raw datasets pertaining to water, carbon and energy variables. 
 
 ## Vision & Current Work
-fluxRecovery is envisioned to make post-processing (1) user friendly, and (2) couple post-processing steps based on energy-water-carbon interactions.
+fluxRecovery is envisioned to make post-processing (1) user friendly, and (2) couple post-processing steps based on energy-water-carbon interactions. This is achieved by expanding some existing tools along with remote sensing data products.
 
 Note: This package is in development stages currently. It builds on top of the `flux-data-qaqc` package (used to post process energy variables) by removing the input text configuration file dependency, and `Reddyproc` package (used to post process carbon variables). In addition, the package uses remote sensing datasets for post-processing soil moisture (from SMAP) and ground water (from GRACE) observations.
 
@@ -54,8 +54,9 @@ print(demo_ver.corrected_daily_df['flux_corr'])     # printing a column in corre
 ```
 
 ## Contributors
-- Karan Bhalla: Lead Developer (Coding, Execution)  (karanbhalla204 \<at\> tamu \<DOT\> edu)
-- Debasish Mishra: Science Lead (Conception, Ideation) (debmishra \<at\> tamu \<DOT\> edu)
+- Debasish Mishra, Texas A&M University: Science Lead (Conception, Ideation) (debmishra \<at\> tamu \<DOT\> edu)
+- Karan Bhalla, Texas A&M University: Lead Developer (Coding, Execution)  (karanbhalla204 \<at\> tamu \<DOT\> edu)
+- Hem Maddipatla, Texas A&M University: Student contributor (Coding, Execution) (hem \<at\> tamu \<DOT\> edu)
 
 ## Acknowledgement
 This project is partially supported by Earth Science Information Partners (ESIP).
